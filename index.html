@@ -84,22 +84,12 @@
   async function fetchWiki() {
     let query = document.getElementById('d-tag').value.trim();
     if (!query) return;
-    const normalized = query.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    document.getElementById('status').textContent = 'Loading...';
+    document.getElementById('status').textContent = 'Searching...';
 
-    // Try exact match first (uses #d tag)
-    let res = await fetch(`/api/wiki/${normalized}`);
+    // Always use search mode for pluralism
+    let res = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
     let data = await res.json();
     let allEvents = data.events;
-    let isSearch = false;
-
-    // If no results from exact, fallback to search mode
-    if (allEvents.length === 0) {
-      res = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
-      data = await res.json();
-      allEvents = data.events;
-      isSearch = true;
-    }
 
     // Group events by 'd' tag
     let groups = {};
@@ -115,22 +105,22 @@
     const uniqueCount = Object.keys(groups).length;
 
     if (uniqueCount === 0) {
-      document.getElementById('status').textContent = 'No results found.';
+      document.getElementById('status').textContent = 'No matching articles found.';
       document.getElementById('single-view').innerHTML = '';
       document.getElementById('versions-select').style.display = 'none';
       return;
     }
 
-    document.getElementById('status').textContent = `Found ${allEvents.length} versions across ${uniqueCount} articles (cached: ${data.fromCache}, search mode: ${isSearch})`;
+    document.getElementById('status').textContent = `Found ${allEvents.length} versions across ${uniqueCount} articles (cached: ${data.fromCache})`;
 
     if (uniqueCount > 1) {
-      // Show search results page with previews
-      let resultsHtml = '<h3>Search Results</h3><ul>';
+      // Show search results page with previews for multiple articles
+      let resultsHtml = '<h3>Search Results (Choose an Article)</h3><ul>';
       for (let d in groups) {
         let evs = groups[d].sort((a, b) => b.created_at - a.created_at);
         let latest = evs[0];
         let title = latest.tags.find(t => t[0] === 'title')?.[1] || d.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        let summary = latest.tags.find(t => t[0] === 'summary')?.[1] || 'No summary available.';
+        let summary = latest.tags.find(t => t[0] === 'summary')?.[1] || (latest.content.slice(0, 150) + '...') || 'No summary available.';
         resultsHtml += `<li><a href="#" data-d="${d}">${title}</a><p>${summary}</p></li>`;
       }
       resultsHtml += '</ul>';
@@ -144,16 +134,33 @@
         link.addEventListener('click', (e) => {
           e.preventDefault();
           document.getElementById('d-tag').value = link.dataset.d;
-          fetchWiki();
+          fetchArticleVersions(link.dataset.d); // Load specific article versions
         });
       }
       return;
     }
 
-    // Single article: proceed with versions (latest first)
+    // Single article found: show its versions
     const d = Object.keys(groups)[0];
     events = groups[d].sort((a, b) => b.created_at - a.created_at);
+    populateVersionSelectors();
+    toggleSingleMode();
+    renderSingleView(0); // Show latest version
+  }
 
+  async function fetchArticleVersions(d) {
+    const normalized = d.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    document.getElementById('status').textContent = 'Loading versions...';
+    let res = await fetch(`/api/wiki/${normalized}`);
+    let data = await res.json();
+    events = data.events.sort((a, b) => b.created_at - a.created_at);
+    document.getElementById('status').textContent = `Found ${events.length} versions for "${d}" (cached: ${data.fromCache})`;
+    populateVersionSelectors();
+    toggleSingleMode();
+    renderSingleView(0);
+  }
+
+  function populateVersionSelectors() {
     const leftSelect = document.getElementById('left-select');
     const rightSelect = document.getElementById('right-select');
     leftSelect.innerHTML = '<option value="">Select Version 1</option>';
@@ -164,9 +171,6 @@
       leftSelect.innerHTML += option;
       rightSelect.innerHTML += option;
     });
-
-    toggleSingleMode();
-    renderSingleView(0); // Show latest version
   }
 
   function toggleCompareMode() {
@@ -185,7 +189,6 @@
     document.getElementById('comparison').style.display = 'none';
     document.getElementById('back-btn').style.display = 'none';
     document.getElementById('compare-btn').style.display = 'inline-block';
-    renderSingleView(0); // Reset to latest
   }
 
   function renderSingleView(idx) {
@@ -193,7 +196,7 @@
     const ev = events[idx];
     const time = new Date(ev.created_at * 1000).toLocaleString();
     const processed = processContent(ev.content);
-    const html = asciidoctor.convert(processed) || `<pre>${ev.content}</pre>`;
+    const html = asciidoctor.convert(processed, { doctype: 'book' }) || `<pre>${ev.content}</pre>`;
     singlePanel.innerHTML = `<h3>Version: ${time} by ${ev.pubkey.slice(0, 8)}...</h3>${html}`;
     addWikiLinkHandlers(singlePanel);
   }
@@ -211,8 +214,8 @@
     const rightTime = new Date(rightEv.created_at * 1000).toLocaleString();
     const leftProcessed = processContent(leftEv.content);
     const rightProcessed = processContent(rightEv.content);
-    const leftHtml = asciidoctor.convert(leftProcessed) || `<pre>${leftEv.content}</pre>`;
-    const rightHtml = asciidoctor.convert(rightProcessed) || `<pre>${rightEv.content}</pre>`;
+    const leftHtml = asciidoctor.convert(leftProcessed, { doctype: 'book' }) || `<pre>${leftEv.content}</pre>`;
+    const rightHtml = asciidoctor.convert(rightProcessed, { doctype: 'book' }) || `<pre>${rightEv.content}</pre>`;
 
     leftPanel.innerHTML = `<h3>Version: ${leftTime} by ${leftEv.pubkey.slice(0, 8)}...</h3>${leftHtml}`;
     rightPanel.innerHTML = `<h3>Version: ${rightTime} by ${rightEv.pubkey.slice(0, 8)}...</h3>${rightHtml}`;

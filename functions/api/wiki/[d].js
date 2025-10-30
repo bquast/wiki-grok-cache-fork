@@ -6,7 +6,7 @@ export async function onRequestGet({ request, params, env }) {
   let filter;
 
   if (mode === 'search' && q) {
-    filter = { kinds: [30818], search: q, limit: 200 };
+    filter = { kinds: [30818], search: q, limit: 300 };
   } else {
     filter = { kinds: [30818], '#d': [d], limit: 50 };
   }
