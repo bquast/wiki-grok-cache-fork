@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Nostr Wiki Viewer</title>
+  <script src="/asciidoctor.min.js"></script>
+  <link rel="stylesheet" href="/asciidoctor.css">
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 20px; max-width: 960px; margin: auto; background: #fff; line-height: 1.6; }
+    .header { border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 20px; }
+    .header h1 { font-size: 24px; margin: 0; color: #000; }
+    .search-bar { width: 250px; padding: 5px; font-size: 14px; border: 1px solid #ccc; }
+    .buttons { margin-top: 10px; }
+    .buttons button { padding: 5px 10px; font-size: 14px; background: #f8f9fa; border: 1px solid #a2a9b1; cursor: pointer; }
+    .content { border: 1px solid #ccc; padding: 15px; background: #fff; }
+    .single-view { min-height: 500px; }
+    .comparison { display: none; flex: 1; gap: 20px; }
+    .article-panel { flex: 1; border: 1px solid #ccc; padding: 15px; overflow-y: auto; min-height: 500px; }
+    #status { color: #54595d; margin-bottom: 15px; font-size: 14px; }
+    #versions-select { margin-bottom: 20px; display: none; }
+    #versions-select h2 { font-size: 18px; margin: 0 0 10px; color: #000; }
+    #versions-select select { width: 100%; padding: 5px; margin-bottom: 10px; border: 1px solid #ccc; }
+    #back-btn { display: none; }
+    a { color: #0645ad; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h3 { font-size: 16px; color: #000; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Nostr Wiki Viewer</h1>
+    <div>
+      <input id="d-tag" class="search-bar" placeholder="Enter wiki title (e.g., 'bitcoin')" />
+      <div class="buttons">
+        <button onclick="fetchWiki()">Load</button>
+        <button onclick="toggleCompareMode()" id="compare-btn">Compare</button>
+        <button onclick="toggleSingleMode()" id="back-btn">Back to Single View</button>
+      </div>
+    </div>
+  </div>
+  <div class="content">
+    <div id="status"></div>
+    <div id="versions-select">
+      <h2>Select Versions</h2>
+      <select id="left-select"><option value="">Select Version 1</option></select>
+      <select id="right-select"><option value="">Select Version 2</option></select>
+      <button onclick="showComparison()">Show Comparison</button>
+    </div>
+    <div id="single-view" class="single-view"></div>
+    <div id="comparison" class="comparison">
+      <div class="article-panel" id="left-panel"></div>
+      <div class="article-panel" id="right-panel"></div>
+    </div>
+  </div>
+
+  <script>
+    const asciidoctor = Asciidoctor();
+    let events = [];
+    let isCompareMode = false;
+
+    async function fetchWiki() {
+      const d = document.getElementById('d-tag').value.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      document.getElementById('status').textContent = 'Loading...';
+      const res = await fetch(`/api/wiki/${d}`);
+      const data = await res.json();
+      if (data.error) return alert(data.error);
+
+      events = data.events.sort((a, b) => b.created_at - a.created_at); // Latest first
+      document.getElementById('status').textContent = `Found ${events.length} versions (cached: ${data.fromCache})`;
+
+      const leftSelect = document.getElementById('left-select');
+      const rightSelect = document.getElementById('right-select');
+      leftSelect.innerHTML = '<option value="">Select Version 1</option>';
+      rightSelect.innerHTML = '<option value="">Select Version 2</option>';
+      events.forEach((ev, idx) => {
+        const time = new Date(ev.created_at * 1000).toLocaleString();
+        const option = `<option value="${idx}">${time} by ${ev.pubkey.slice(0, 8)}...</option>`;
+        leftSelect.innerHTML += option;
+        rightSelect.innerHTML += option;
+      });
+
+      toggleSingleMode();
+      renderSingleView(0); // Show latest version
+    }
+
+    function toggleCompareMode() {
+      isCompareMode = true;
+      document.getElementById('versions-select').style.display = 'block';
+      document.getElementById('single-view').style.display = 'none';
+      document.getElementById('comparison').style.display = 'none';
+      document.getElementById('back-btn').style.display = 'inline-block';
+      document.getElementById('compare-btn').style.display = 'none';
+    }
+
+    function toggleSingleMode() {
+      isCompareMode = false;
+      document.getElementById('versions-select').style.display = 'none';
+      document.getElementById('single-view').style.display = 'block';
+      document.getElementById('comparison').style.display = 'none';
+      document.getElementById('back-btn').style.display = 'none';
+      document.getElementById('compare-btn').style.display = 'inline-block';
+      renderSingleView(0); // Reset to latest
+    }
+
+    function renderSingleView(idx) {
+      const singlePanel = document.getElementById('single-view');
+      const ev = events[idx];
+      const time = new Date(ev.created_at * 1000).toLocaleString();
+      const html = asciidoctor.convert(ev.content) || `<pre>${ev.content}</pre>`; // Fallback to raw if AsciiDoc fails
+      singlePanel.innerHTML = `<h3>Version: ${time} by ${ev.pubkey.slice(0, 8)}...</h3>${html}`;
+    }
+
+    function showComparison() {
+      const leftIdx = document.getElementById('left-select').value;
+      const rightIdx = document.getElementById('right-select').value;
+      if (!leftIdx || !rightIdx || leftIdx === rightIdx) return alert('Select two different versions');
+
+      const leftPanel = document.getElementById('left-panel');
+      const rightPanel = document.getElementById('right-panel');
+      const leftEv = events[leftIdx];
+      const rightEv = events[rightIdx];
+      const leftTime = new Date(leftEv.created_at * 1000).toLocaleString();
+      const rightTime = new Date(rightEv.created_at * 1000).toLocaleString();
+      const leftHtml = asciidoctor.convert(leftEv.content) || `<pre>${leftEv.content}</pre>`;
+      const rightHtml = asciidoctor.convert(rightEv.content) || `<pre>${rightEv.content}</pre>`;
+
+      leftPanel.innerHTML = `<h3>Version: ${leftTime} by ${leftEv.pubkey.slice(0, 8)}...</h3>${leftHtml}`;
+      rightPanel.innerHTML = `<h3>Version: ${rightTime} by ${rightEv.pubkey.slice(0, 8)}...</h3>${rightHtml}`;
+      document.getElementById('comparison').style.display = 'flex';
+      document.getElementById('versions-select').style.display = 'none';
+    }
+  </script>
+</body>
+</html>
