@@ -53,82 +53,174 @@
     </div>
   </div>
 
-  <script>
-    const asciidoctor = Asciidoctor();
-    let events = [];
-    let isCompareMode = false;
+<script>
+  const asciidoctor = Asciidoctor();
+  let events = [];
+  let isCompareMode = false;
 
-    async function fetchWiki() {
-      const d = document.getElementById('d-tag').value.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-      document.getElementById('status').textContent = 'Loading...';
-      const res = await fetch(`/api/wiki/${d}`);
-      const data = await res.json();
-      if (data.error) return alert(data.error);
+  function processContent(content) {
+    // Convert Markdown images to AsciiDoc
+    content = content.replace(/!\[([^\]]*?)\]\((.*?)\)/g, 'image::$2[$1]');
+    // Convert wikilinks with pipe: [[target|display]] -> link:wiki:target[display]
+    content = content.replace(/\[\[([^|]+?)\|([^|]+?)\]\]/g, 'link:wiki:$1[$2]');
+    // Convert simple wikilinks: [[target]] -> link:wiki:target[target]
+    content = content.replace(/\[\[([^\]|]+?)\]\]/g, 'link:wiki:$1[$1]');
+    return content;
+  }
 
-      events = data.events.sort((a, b) => b.created_at - a.created_at); // Latest first
-      document.getElementById('status').textContent = `Found ${events.length} versions (cached: ${data.fromCache})`;
-
-      const leftSelect = document.getElementById('left-select');
-      const rightSelect = document.getElementById('right-select');
-      leftSelect.innerHTML = '<option value="">Select Version 1</option>';
-      rightSelect.innerHTML = '<option value="">Select Version 2</option>';
-      events.forEach((ev, idx) => {
-        const time = new Date(ev.created_at * 1000).toLocaleString();
-        const option = `<option value="${idx}">${time} by ${ev.pubkey.slice(0, 8)}...</option>`;
-        leftSelect.innerHTML += option;
-        rightSelect.innerHTML += option;
+  function addWikiLinkHandlers(panel) {
+    const links = panel.querySelectorAll('a[href^="wiki:"]');
+    for (let link of links) {
+      const target = link.getAttribute('href').slice(5);
+      link.setAttribute('href', '#');
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        document.getElementById('d-tag').value = target;
+        fetchWiki();
       });
+    }
+  }
 
-      toggleSingleMode();
-      renderSingleView(0); // Show latest version
+  async function fetchWiki() {
+    let query = document.getElementById('d-tag').value.trim();
+    if (!query) return;
+    const normalized = query.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    document.getElementById('status').textContent = 'Loading...';
+
+    // Try exact match first (uses #d tag)
+    let res = await fetch(`/api/wiki/${normalized}`);
+    let data = await res.json();
+    let allEvents = data.events;
+    let isSearch = false;
+
+    // If no results from exact, fallback to search mode
+    if (allEvents.length === 0) {
+      res = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
+      data = await res.json();
+      allEvents = data.events;
+      isSearch = true;
     }
 
-    function toggleCompareMode() {
-      isCompareMode = true;
-      document.getElementById('versions-select').style.display = 'block';
-      document.getElementById('single-view').style.display = 'none';
-      document.getElementById('comparison').style.display = 'none';
-      document.getElementById('back-btn').style.display = 'inline-block';
-      document.getElementById('compare-btn').style.display = 'none';
-    }
+    // Group events by 'd' tag
+    let groups = {};
+    allEvents.forEach(ev => {
+      let dTag = ev.tags.find(t => t[0] === 'd');
+      if (dTag) {
+        let d = dTag[1];
+        if (!groups[d]) groups[d] = [];
+        groups[d].push(ev);
+      }
+    });
 
-    function toggleSingleMode() {
-      isCompareMode = false;
+    const uniqueCount = Object.keys(groups).length;
+
+    if (uniqueCount === 0) {
+      document.getElementById('status').textContent = 'No results found.';
+      document.getElementById('single-view').innerHTML = '';
       document.getElementById('versions-select').style.display = 'none';
-      document.getElementById('single-view').style.display = 'block';
-      document.getElementById('comparison').style.display = 'none';
-      document.getElementById('back-btn').style.display = 'none';
-      document.getElementById('compare-btn').style.display = 'inline-block';
-      renderSingleView(0); // Reset to latest
+      return;
     }
 
-    function renderSingleView(idx) {
-      const singlePanel = document.getElementById('single-view');
-      const ev = events[idx];
+    document.getElementById('status').textContent = `Found ${allEvents.length} versions across ${uniqueCount} articles (cached: ${data.fromCache}, search mode: ${isSearch})`;
+
+    if (uniqueCount > 1) {
+      // Show search results page with previews
+      let resultsHtml = '<h3>Search Results</h3><ul>';
+      for (let d in groups) {
+        let evs = groups[d].sort((a, b) => b.created_at - a.created_at);
+        let latest = evs[0];
+        let title = latest.tags.find(t => t[0] === 'title')?.[1] || d.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        let summary = latest.tags.find(t => t[0] === 'summary')?.[1] || 'No summary available.';
+        resultsHtml += `<li><a href="#" data-d="${d}">${title}</a><p>${summary}</p></li>`;
+      }
+      resultsHtml += '</ul>';
+      document.getElementById('single-view').innerHTML = resultsHtml;
+      document.getElementById('versions-select').style.display = 'none';
+      document.getElementById('comparison').style.display = 'none';
+
+      // Add click handlers for results
+      const resultLinks = document.querySelectorAll('#single-view a[data-d]');
+      for (let link of resultLinks) {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          document.getElementById('d-tag').value = link.dataset.d;
+          fetchWiki();
+        });
+      }
+      return;
+    }
+
+    // Single article: proceed with versions (latest first)
+    const d = Object.keys(groups)[0];
+    events = groups[d].sort((a, b) => b.created_at - a.created_at);
+
+    const leftSelect = document.getElementById('left-select');
+    const rightSelect = document.getElementById('right-select');
+    leftSelect.innerHTML = '<option value="">Select Version 1</option>';
+    rightSelect.innerHTML = '<option value="">Select Version 2</option>';
+    events.forEach((ev, idx) => {
       const time = new Date(ev.created_at * 1000).toLocaleString();
-      const html = asciidoctor.convert(ev.content) || `<pre>${ev.content}</pre>`; // Fallback to raw if AsciiDoc fails
-      singlePanel.innerHTML = `<h3>Version: ${time} by ${ev.pubkey.slice(0, 8)}...</h3>${html}`;
-    }
+      const option = `<option value="${idx}">${time} by ${ev.pubkey.slice(0, 8)}...</option>`;
+      leftSelect.innerHTML += option;
+      rightSelect.innerHTML += option;
+    });
 
-    function showComparison() {
-      const leftIdx = document.getElementById('left-select').value;
-      const rightIdx = document.getElementById('right-select').value;
-      if (!leftIdx || !rightIdx || leftIdx === rightIdx) return alert('Select two different versions');
+    toggleSingleMode();
+    renderSingleView(0); // Show latest version
+  }
 
-      const leftPanel = document.getElementById('left-panel');
-      const rightPanel = document.getElementById('right-panel');
-      const leftEv = events[leftIdx];
-      const rightEv = events[rightIdx];
-      const leftTime = new Date(leftEv.created_at * 1000).toLocaleString();
-      const rightTime = new Date(rightEv.created_at * 1000).toLocaleString();
-      const leftHtml = asciidoctor.convert(leftEv.content) || `<pre>${leftEv.content}</pre>`;
-      const rightHtml = asciidoctor.convert(rightEv.content) || `<pre>${rightEv.content}</pre>`;
+  function toggleCompareMode() {
+    isCompareMode = true;
+    document.getElementById('versions-select').style.display = 'block';
+    document.getElementById('single-view').style.display = 'none';
+    document.getElementById('comparison').style.display = 'none';
+    document.getElementById('back-btn').style.display = 'inline-block';
+    document.getElementById('compare-btn').style.display = 'none';
+  }
 
-      leftPanel.innerHTML = `<h3>Version: ${leftTime} by ${leftEv.pubkey.slice(0, 8)}...</h3>${leftHtml}`;
-      rightPanel.innerHTML = `<h3>Version: ${rightTime} by ${rightEv.pubkey.slice(0, 8)}...</h3>${rightHtml}`;
-      document.getElementById('comparison').style.display = 'flex';
-      document.getElementById('versions-select').style.display = 'none';
-    }
-  </script>
+  function toggleSingleMode() {
+    isCompareMode = false;
+    document.getElementById('versions-select').style.display = 'none';
+    document.getElementById('single-view').style.display = 'block';
+    document.getElementById('comparison').style.display = 'none';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('compare-btn').style.display = 'inline-block';
+    renderSingleView(0); // Reset to latest
+  }
+
+  function renderSingleView(idx) {
+    const singlePanel = document.getElementById('single-view');
+    const ev = events[idx];
+    const time = new Date(ev.created_at * 1000).toLocaleString();
+    const processed = processContent(ev.content);
+    const html = asciidoctor.convert(processed) || `<pre>${ev.content}</pre>`;
+    singlePanel.innerHTML = `<h3>Version: ${time} by ${ev.pubkey.slice(0, 8)}...</h3>${html}`;
+    addWikiLinkHandlers(singlePanel);
+  }
+
+  function showComparison() {
+    const leftIdx = document.getElementById('left-select').value;
+    const rightIdx = document.getElementById('right-select').value;
+    if (!leftIdx || !rightIdx || leftIdx === rightIdx) return alert('Select two different versions');
+
+    const leftPanel = document.getElementById('left-panel');
+    const rightPanel = document.getElementById('right-panel');
+    const leftEv = events[leftIdx];
+    const rightEv = events[rightIdx];
+    const leftTime = new Date(leftEv.created_at * 1000).toLocaleString();
+    const rightTime = new Date(rightEv.created_at * 1000).toLocaleString();
+    const leftProcessed = processContent(leftEv.content);
+    const rightProcessed = processContent(rightEv.content);
+    const leftHtml = asciidoctor.convert(leftProcessed) || `<pre>${leftEv.content}</pre>`;
+    const rightHtml = asciidoctor.convert(rightProcessed) || `<pre>${rightEv.content}</pre>`;
+
+    leftPanel.innerHTML = `<h3>Version: ${leftTime} by ${leftEv.pubkey.slice(0, 8)}...</h3>${leftHtml}`;
+    rightPanel.innerHTML = `<h3>Version: ${rightTime} by ${rightEv.pubkey.slice(0, 8)}...</h3>${rightHtml}`;
+    addWikiLinkHandlers(leftPanel);
+    addWikiLinkHandlers(rightPanel);
+    document.getElementById('comparison').style.display = 'flex';
+    document.getElementById('versions-select').style.display = 'none';
+  }
+</script>
 </body>
 </html>
