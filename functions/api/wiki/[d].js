@@ -6,14 +6,14 @@ export async function onRequestGet({ request, params, env }) {
   let filter;
 
   if (mode === 'search' && q) {
-    filter = { kinds: [30818], search: q, limit: 300 };
+    filter = { kinds: [30818], search: q, limit: 500 };
   } else {
     filter = { kinds: [30818], '#d': [d], limit: 50 };
   }
 
   const KV = env.WIKI_CACHE;
   const cacheKey = (mode === 'exact') ? `wiki:${d}` : null; // No caching for search
-  const relays = ['wss://relay.damus.io', 'wss://nos.lol'];
+  const relays = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band', 'wss://relay.primal.net'];
   const TTL = 3600 * 1000; // 1 hour
 
   let cached = (cacheKey) ? await KV.get(cacheKey) : null;
@@ -21,27 +21,47 @@ export async function onRequestGet({ request, params, env }) {
   if (cached) {
     cached = JSON.parse(cached);
     if (Date.now() - cached.lastUpdated < TTL) {
-      return new Response(JSON.stringify({ events: cached.events, fromCache: true }), { headers: { 'Content-Type': 'application/json' } });
+      fromCache = true;
+      return new Response(JSON.stringify({ events: cached.events, fromCache }), { headers: { 'Content-Type': 'application/json' } });
     }
   }
 
   const events = [];
   for (const relay of relays) {
-    const ws = new WebSocket(relay);
-    await new Promise(resolve => ws.addEventListener('open', resolve));
-
-    const subId = 'wiki-' + Math.random().toString(36);
-    ws.send(JSON.stringify(['REQ', subId, filter]));
-
-    const eventsPromise = new Promise(resolve => {
-      ws.addEventListener('message', msg => {
-        const data = JSON.parse(msg.data);
-        if (data[0] === 'EVENT') events.push(data[2]);
+    try {
+      const ws = new WebSocket(relay);
+      await new Promise((resolve, reject) => {
+        ws.addEventListener('open', resolve);
+        ws.addEventListener('error', reject);
       });
-      setTimeout(() => { ws.send(JSON.stringify(['CLOSE', subId])); resolve(); }, 5000);
-    });
-    await eventsPromise;
-    ws.close();
+
+      const subId = 'wiki-' + Math.random().toString(36).slice(2);
+      ws.send(JSON.stringify(['REQ', subId, filter]));
+
+      const timeoutId = setTimeout(() => {
+        ws.send(JSON.stringify(['CLOSE', subId]));
+        ws.close();
+      }, 30000); // Fallback timeout: 30 seconds
+
+      await new Promise((resolve) => {
+        ws.addEventListener('message', (msg) => {
+          const data = JSON.parse(msg.data);
+          if (data[0] === 'EVENT' && data[1] === subId) {
+            events.push(data[2]);
+          } else if (data[0] === 'EOSE' && data[1] === subId) {
+            clearTimeout(timeoutId);
+            ws.send(JSON.stringify(['CLOSE', subId]));
+            ws.close();
+            resolve();
+          }
+        });
+
+        ws.addEventListener('close', resolve);
+        ws.addEventListener('error', resolve); // Resolve on error to continue with other relays
+      });
+    } catch (e) {
+      // Skip failed relay
+    }
   }
 
   const uniqueEvents = [...new Map(events.map(ev => [ev.id, ev])).values()];
