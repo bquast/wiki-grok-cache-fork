@@ -2,17 +2,24 @@ export async function onRequestGet({ request, params, env }) {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') || 'exact';
   const q = url.searchParams.get('q');
+  const tag = url.searchParams.get('tag');
   let d = params.d;
   let filter;
+  let limit = 50;
 
   if (mode === 'search' && q) {
-    filter = { kinds: [30818], search: q, limit: 500 };
+    filter = { kinds: [30818], search: q };
+    limit = 500;
+  } else if (mode === 'tag' && tag && q) {
+    filter = { kinds: [30818], ['#' + tag]: [q] };
   } else {
-    filter = { kinds: [30818], '#d': [d], limit: 50 };
+    filter = { kinds: [30818], '#d': [d] };
   }
 
+  filter.limit = limit;
+
   const KV = env.WIKI_CACHE;
-  const cacheKey = (mode === 'exact') ? `wiki:${d}` : null; // No caching for search
+  const cacheKey = (mode === 'exact') ? `wiki:${d}` : null; // Cache only exact #d
   const relays = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band', 'wss://relay.primal.net'];
   const TTL = 3600 * 1000; // 1 hour
 

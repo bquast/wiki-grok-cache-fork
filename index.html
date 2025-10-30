@@ -81,19 +81,9 @@
     }
   }
 
-  async function fetchWiki() {
-    let query = document.getElementById('d-tag').value.trim();
-    if (!query) return;
-    document.getElementById('status').textContent = 'Searching...';
-
-    // Always use search mode for pluralism
-    let res = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
-    let data = await res.json();
-    let allEvents = data.events;
-
-    // Group events by 'd' tag
+  function groupByD(events) {
     let groups = {};
-    allEvents.forEach(ev => {
+    events.forEach(ev => {
       let dTag = ev.tags.find(t => t[0] === 'd');
       if (dTag) {
         let d = dTag[1];
@@ -101,51 +91,105 @@
         groups[d].push(ev);
       }
     });
+    return groups;
+  }
 
-    const uniqueCount = Object.keys(groups).length;
+  function displayResults(groups, sectionTitle, append = false) {
+    const singleView = document.getElementById('single-view');
+    if (!append) singleView.innerHTML = '';
+    if (Object.keys(groups).length === 0) return;
 
-    if (uniqueCount === 0) {
-      document.getElementById('status').textContent = 'No matching articles found.';
-      document.getElementById('single-view').innerHTML = '';
-      document.getElementById('versions-select').style.display = 'none';
-      return;
+    let resultsHtml = `<h3>${sectionTitle}</h3><ul>`;
+    for (let d in groups) {
+      let evs = groups[d].sort((a, b) => b.created_at - a.created_at);
+      let latest = evs[0];
+      let title = latest.tags.find(t => t[0] === 'title')?.[1] || d.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      let summary = latest.tags.find(t => t[0] === 'summary')?.[1] || (latest.content.slice(0, 150) + '...') || 'No summary available.';
+      resultsHtml += `<li><a href="#" data-d="${d}">${title}</a><p>${summary}</p></li>`;
+    }
+    resultsHtml += '</ul>';
+    if (append) {
+      singleView.innerHTML += resultsHtml;
+    } else {
+      singleView.innerHTML = resultsHtml;
     }
 
-    document.getElementById('status').textContent = `Found ${allEvents.length} versions across ${uniqueCount} articles (cached: ${data.fromCache})`;
+    // Add click handlers
+    const resultLinks = singleView.querySelectorAll('a[data-d]');
+    for (let link of resultLinks) {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        document.getElementById('d-tag').value = link.dataset.d;
+        fetchArticleVersions(link.dataset.d);
+      });
+    }
+  }
 
-    if (uniqueCount > 1) {
-      // Show search results page with previews for multiple articles
-      let resultsHtml = '<h3>Search Results (Choose an Article)</h3><ul>';
-      for (let d in groups) {
-        let evs = groups[d].sort((a, b) => b.created_at - a.created_at);
-        let latest = evs[0];
-        let title = latest.tags.find(t => t[0] === 'title')?.[1] || d.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        let summary = latest.tags.find(t => t[0] === 'summary')?.[1] || (latest.content.slice(0, 150) + '...') || 'No summary available.';
-        resultsHtml += `<li><a href="#" data-d="${d}">${title}</a><p>${summary}</p></li>`;
-      }
-      resultsHtml += '</ul>';
-      document.getElementById('single-view').innerHTML = resultsHtml;
-      document.getElementById('versions-select').style.display = 'none';
-      document.getElementById('comparison').style.display = 'none';
+  async function fetchWiki() {
+    let query = document.getElementById('d-tag').value.trim();
+    if (!query) return;
+    let normalized = query.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    document.getElementById('status').textContent = 'Loading exact matches...';
+    document.getElementById('single-view').innerHTML = '';
+    document.getElementById('versions-select').style.display = 'none';
+    document.getElementById('comparison').style.display = 'none';
 
-      // Add click handlers for results
-      const resultLinks = document.querySelectorAll('#single-view a[data-d]');
-      for (let link of resultLinks) {
-        link.addEventListener('click', (e) => {
-          e.preventDefault();
-          document.getElementById('d-tag').value = link.dataset.d;
-          fetchArticleVersions(link.dataset.d); // Load specific article versions
-        });
-      }
-      return;
+    // Fetch exact 'd' match
+    let res_d = await fetch(`/api/wiki/${normalized}`);
+    let data_d = await res_d.json();
+
+    // Fetch exact 'title' match (using new tag mode)
+    let res_title = await fetch(`/api/wiki/ignored?mode=tag&tag=title&q=${encodeURIComponent(query)}`);
+    let data_title = await res_title.json();
+
+    // Combine and unique
+    let all_exact_events = data_d.events.concat(data_title.events);
+    let unique_exact_events = [...new Map(all_exact_events.map(ev => [ev.id, ev])).values()];
+    let groups_exact = groupByD(unique_exact_events);
+
+    const exactCount = Object.keys(groups_exact).length;
+    document.getElementById('status').textContent = `Found ${unique_exact_events.length} versions across ${exactCount} exact articles...`;
+
+    if (exactCount > 0) {
+      displayResults(groups_exact, 'Exact Matches (by ID or Title)');
     }
 
-    // Single article found: show its versions
-    const d = Object.keys(groups)[0];
-    events = groups[d].sort((a, b) => b.created_at - a.created_at);
-    populateVersionSelectors();
-    toggleSingleMode();
-    renderSingleView(0); // Show latest version
+    // If only one exact group, auto-load versions
+    if (exactCount === 1) {
+      const d = Object.keys(groups_exact)[0];
+      events = groups_exact[d].sort((a, b) => b.created_at - a.created_at);
+      populateVersionSelectors();
+      toggleSingleMode();
+      renderSingleView(0);
+      document.getElementById('status').textContent += ` (Auto-loading single exact article)`;
+      return; // Skip broad search if single exact
+    }
+
+    // Asynchronously fetch broad search
+    document.getElementById('status').textContent += ' Loading other results...';
+    let res_search = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
+    let data_search = await res_search.json();
+
+    // Filter out duplicates from exact
+    let new_events = data_search.events.filter(ev => !unique_exact_events.some(e => e.id === ev.id));
+    let groups_new = groupByD(new_events);
+
+    const newCount = Object.keys(groups_new).length;
+    document.getElementById('status').textContent = `Found ${all_exact_events.length + new_events.length} versions across ${exactCount + newCount} articles (cached: varies)`;
+
+    if (newCount > 0) {
+      displayResults(groups_new, 'Other Relevant Articles', true); // Append
+    }
+
+    // If total one group after all, auto-load
+    if (exactCount + newCount === 1) {
+      const allGroups = { ...groups_exact, ...groups_new };
+      const d = Object.keys(allGroups)[0];
+      events = allGroups[d].sort((a, b) => b.created_at - a.created_at);
+      populateVersionSelectors();
+      toggleSingleMode();
+      renderSingleView(0);
+    }
   }
 
   async function fetchArticleVersions(d) {
