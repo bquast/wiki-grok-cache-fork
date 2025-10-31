@@ -7,23 +7,30 @@
   <link rel="stylesheet" href="/asciidoctor.css">
   <style>
     body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 20px; max-width: 960px; margin: auto; background: #fff; line-height: 1.6; }
-    .header { border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 20px; }
-    .header h1 { font-size: 24px; margin: 0; color: #000; }
-    .search-bar { width: 250px; padding: 5px; font-size: 14px; border: 1px solid #ccc; }
+    .header { border-bottom: 1px solid #c8ccd1; padding-bottom: 10px; margin-bottom: 20px; }
+    .header h1 { font-size: 24px; margin: 0; color: #202122; }
+    .search-bar { width: 250px; padding: 5px; font-size: 14px; border: 1px solid #a2a9b1; }
     .buttons { margin-top: 10px; }
     .buttons button { padding: 5px 10px; font-size: 14px; background: #f8f9fa; border: 1px solid #a2a9b1; cursor: pointer; }
-    .content { border: 1px solid #ccc; padding: 15px; background: #fff; }
-    .single-view { min-height: 500px; }
+    .content { border: 1px solid #c8ccd1; padding: 15px; background: #fff; }
+    .single-view { min-height: 500px; padding: 15px; }
     .comparison { display: none; flex: 1; gap: 20px; }
-    .article-panel { flex: 1; border: 1px solid #ccc; padding: 15px; overflow-y: auto; min-height: 500px; }
+    .article-panel { flex: 1; border: 1px solid #c8ccd1; padding: 15px; overflow-y: auto; min-height: 500px; }
     #status { color: #54595d; margin-bottom: 15px; font-size: 14px; }
     #versions-select { margin-bottom: 20px; display: none; }
-    #versions-select h2 { font-size: 18px; margin: 0 0 10px; color: #000; }
-    #versions-select select { width: 100%; padding: 5px; margin-bottom: 10px; border: 1px solid #ccc; }
+    #versions-select h2 { font-size: 18px; margin: 0 0 10px; color: #202122; }
+    #versions-select select { width: 100%; padding: 5px; margin-bottom: 10px; border: 1px solid #a2a9b1; }
+    #single-select { width: 100%; padding: 5px; margin-bottom: 10px; border: 1px solid #a2a9b1; display: none; }
     #back-btn { display: none; }
     a { color: #0645ad; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    h3 { font-size: 16px; color: #000; margin-top: 0; }
+    h3 { font-size: 16px; color: #202122; margin-top: 0; }
+    .popular-lists { display: flex; gap: 20px; flex-wrap: wrap; }
+    .popular-column { flex: 1; min-width: 200px; border: 1px solid #c8ccd1; padding: 10px; }
+    .popular-column h2 { font-size: 18px; margin: 0 0 10px; }
+    .popular-column ul { list-style: none; padding: 0; }
+    .popular-column li { margin-bottom: 5px; }
+    @media (max-width: 768px) { .popular-lists { flex-direction: column; } }
   </style>
 </head>
 <body>
@@ -32,21 +39,23 @@
     <div>
       <input id="d-tag" class="search-bar" placeholder="Enter wiki title (e.g., 'bitcoin')" />
       <div class="buttons">
-        <button onclick="fetchWiki()">Search</button>
-        <button onclick="toggleCompareMode()" id="compare-btn">Compare</button>
-        <button onclick="toggleSingleMode()" id="back-btn">Back to Single View</button>
+        <button id="load-btn">Load</button>
+        <button id="compare-btn">Compare</button>
+        <button id="back-btn">Back to Single View</button>
       </div>
     </div>
   </div>
   <div class="content">
     <div id="status"></div>
+    <div id="popular-lists" class="popular-lists"></div>
     <div id="versions-select">
       <h2>Select Versions</h2>
       <select id="left-select"><option value="">Select Version 1</option></select>
       <select id="right-select"><option value="">Select Version 2</option></select>
-      <button onclick="showComparison()">Show Comparison</button>
+      <button id="show-comparison-btn">Show Comparison</button>
     </div>
-    <div id="single-view" class="single-view"></div>
+    <select id="single-select"></select>
+    <div id="single-view" class="single-view" style="display: none;"></div>
     <div id="comparison" class="comparison">
       <div class="article-panel" id="left-panel"></div>
       <div class="article-panel" id="right-panel"></div>
@@ -56,168 +65,112 @@
   <script>
     const asciidoctor = Asciidoctor();
     let events = [];
+    let popularArticles = [];
     let isCompareMode = false;
-    let allGroups = {}; // Track all loaded groups for dedup
 
-    function processContent(content) {
-      content = content.replace(/!\[([^\]]*?)\]\((.*?)\)/g, 'image::$2[$1]');
-      content = content.replace(/\[\[([^|]+?)\|([^|]+?)\]\]/g, 'link:wiki:$1[$2]');
-      content = content.replace(/\[\[([^\]|]+?)\]\]/g, 'link:wiki:$1[$1]');
-      return content;
-    }
+    // Attach event listeners
+    document.getElementById('load-btn').addEventListener('click', fetchWiki);
+    document.getElementById('compare-btn').addEventListener('click', toggleCompareMode);
+    document.getElementById('back-btn').addEventListener('click', toggleSingleMode);
+    document.getElementById('show-comparison-btn').addEventListener('click', showComparison);
+    document.getElementById('single-select').addEventListener('change', (e) => renderSingleView(e.target.value));
 
-    function addWikiLinkHandlers(panel) {
-      const links = panel.querySelectorAll('a[href^="wiki:"]');
-      for (let link of links) {
-        const target = link.getAttribute('href').slice(5);
-        link.setAttribute('href', '#');
-        link.addEventListener('click', (e) => {
-          e.preventDefault();
-          document.getElementById('d-tag').value = target;
-          fetchWiki();
-        });
-      }
-    }
-
-    function groupByD(newEvents) {
-      let groups = {};
-      newEvents.forEach(ev => {
-        let dTag = ev.tags.find(t => t[0] === 'd');
-        if (dTag) {
-          let d = dTag[1];
-          if (!groups[d] && !allGroups[d]) { // Dedup against all loaded
-            groups[d] = [];
-          }
-          if (groups[d]) groups[d].push(ev);
-        }
-      });
-      return groups;
-    }
-
-    function displayResults(groups, sectionTitle, append = true) {
-      const singleView = document.getElementById('single-view');
-      if (Object.keys(groups).length === 0) return;
-
-      let resultsHtml = append ? '' : '<h3>Search Results (Choose an Article)</h3>';
-      resultsHtml += `<h4>${sectionTitle}</h4><ul>`;
-      for (let d in groups) {
-        allGroups[d] = groups[d]; // Add to global dedup
-        let evs = groups[d].sort((a, b) => b.created_at - a.created_at);
-        let latest = evs[0];
-        let title = latest.tags.find(t => t[0] === 'title')?.[1] || d.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        let summary = latest.tags.find(t => t[0] === 'summary')?.[1] || (latest.content.slice(0, 150) + '...') || 'No summary available.';
-        resultsHtml += `<li><a href="#" data-d="${d}">${title}</a><p>${summary}</p></li>`;
-      }
-      resultsHtml += '</ul>';
-
-      if (append) {
-        singleView.innerHTML += resultsHtml;
-      } else {
-        singleView.innerHTML = resultsHtml;
-      }
-
-      // Add click handlers
-      const resultLinks = singleView.querySelectorAll('a[data-d]');
-      for (let link of resultLinks) {
-        link.addEventListener('click', (e) => {
-          e.preventDefault();
-          document.getElementById('d-tag').value = link.dataset.d;
-          fetchArticleVersions(link.dataset.d);
-        });
-      }
-    }
-
-    async function fetchWiki() {
-      let query = document.getElementById('d-tag').value.trim();
-      if (!query) return;
-      let normalized = query.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-      document.getElementById('status').textContent = 'Loading cached exact matches...';
-      document.getElementById('single-view').innerHTML = '';
-      document.getElementById('versions-select').style.display = 'none';
-      document.getElementById('comparison').style.display = 'none';
-      allGroups = {}; // Reset for new search
-
+    async function fetchPopular() {
+      document.getElementById('status').textContent = 'Loading popular articles...';
       try {
-        // Step 1: Fetch and show cached exact #d (fast)
-        let res_d = await fetch(`/api/wiki/${normalized}`);
-        let data_d = await res_d.json();
-        let groups_cached = groupByD(data_d.events);
-        let cachedCount = Object.keys(groups_cached).length;
-        document.getElementById('status').textContent = `Found ${data_d.events.length} versions across ${cachedCount} cached exact articles...`;
-        if (cachedCount > 0) {
-          displayResults(groups_cached, 'Cached Exact Matches (by ID)', false);
-        } else {
-          document.getElementById('single-view').innerHTML = '<h3>Search Results (Choose an Article)</h3>';
-        }
+        const res = await fetch('/api/popular');
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const text = await res.text();
+        console.log('Raw response:', text);
+        const data = JSON.parse(text); // Parse after logging raw
+        console.log('Parsed data:', data);
+        popularArticles = data.articles || [];
+        if (popularArticles.length === 0) console.warn('No articles received');
+        document.getElementById('status').textContent = '';
 
-        // Step 2: Fetch and append title matches
-        document.getElementById('status').textContent += ' Loading title matches...';
-        let res_title = await fetch(`/api/wiki/ignored?mode=tag&tag=title&q=${encodeURIComponent(query)}`);
-        let data_title = await res_title.json();
-        let groups_title = groupByD(data_title.events);
-        let titleCount = Object.keys(groups_title).length;
-        if (titleCount > 0) {
-          displayResults(groups_title, 'Exact Title Matches');
-        }
+        const listsDiv = document.getElementById('popular-lists');
+        listsDiv.innerHTML = '';
+        const now = Date.now() / 1000;
 
-        // Step 3: Fetch and append broad search
-        document.getElementById('status').textContent += ' Loading other results...';
-        let res_search = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
-        let data_search = await res_search.json();
-        let groups_search = groupByD(data_search.events);
-        let searchCount = Object.keys(groups_search).length;
-        if (searchCount > 0) {
-          displayResults(groups_search, 'Other Relevant Articles');
-        }
+        const mostPopular = [...popularArticles].sort(() => Math.random() - 0.5).slice(0, 30);
+        listsDiv.appendChild(createColumn('Most Popular Articles', mostPopular));
 
-        const totalCount = Object.keys(allGroups).length;
-        const totalEvents = data_d.events.length + data_title.events.length + data_search.events.length;
-        document.getElementById('status').textContent = `Found ${totalEvents} versions across ${totalCount} articles (cached: varies)`;
+        const thisWeek = popularArticles.filter(a => a.created_at > now - 604800).sort((a, b) => b.reactionCount - a.reactionCount).slice(0, 30);
+        listsDiv.appendChild(createColumn('Most Popular This Week', thisWeek));
 
-        // Only auto-load at the end if exactly 1 total article
-        if (totalCount === 1) {
-          const d = Object.keys(allGroups)[0];
-          events = allGroups[d].sort((a, b) => b.created_at - a.created_at);
-          populateVersionSelectors();
-          toggleSingleMode();
-          renderSingleView(0);
-          document.getElementById('status').textContent += ' (Auto-loading single article)';
-        } else if (totalCount === 0) {
-          document.getElementById('single-view').innerHTML = '<p>No results found.</p>';
-        }
+        const today = popularArticles.filter(a => a.created_at > now - 86400).sort((a, b) => b.reactionCount - a.reactionCount).slice(0, 30);
+        listsDiv.appendChild(createColumn('Most Popular Today', today));
+
+        const lastHour = popularArticles.filter(a => a.created_at > now - 3600).sort((a, b) => b.reactionCount - a.reactionCount).slice(0, 30);
+        listsDiv.appendChild(createColumn('Most Popular Last Hour', lastHour));
+
+        const authorMap = {};
+        popularArticles.forEach(a => {
+          authorMap[a.pubkey] = (authorMap[a.pubkey] || 0) + (a.reactionCount || 0);
+        });
+        const topAuthors = Object.entries(authorMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([pubkey]) => pubkey);
+        const byAuthors = popularArticles.filter(a => topAuthors.includes(a.pubkey)).sort(() => Math.random() - 0.5).slice(0, 30);
+        listsDiv.appendChild(createColumn('Most Popular by Top Authors', byAuthors));
       } catch (e) {
-        document.getElementById('status').textContent = 'Error loading results: ' + e.message;
+        document.getElementById('status').textContent = `Error loading popular articles: ${e.message}`;
+        console.error('Fetch error:', e);
       }
     }
 
-    async function fetchArticleVersions(d) {
-      const normalized = d.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-      document.getElementById('status').textContent = 'Loading versions...';
-      let res = await fetch(`/api/wiki/${normalized}`);
-      let data = await res.json();
-      events = data.events.sort((a, b) => b.created_at - a.created_at);
-      document.getElementById('status').textContent = `Found ${events.length} versions for "${d}" (cached: ${data.fromCache})`;
-      populateVersionSelectors();
-      toggleSingleMode();
-      renderSingleView(0);
+    function createColumn(title, articles) {
+      const column = document.createElement('div');
+      column.className = 'popular-column';
+      column.innerHTML = `<h2>${title}</h2><ul></ul>`;
+      const ul = column.querySelector('ul');
+      articles.forEach(a => {
+        const li = document.createElement('li');
+        li.innerHTML = `<a href="javascript:void(0)" onclick="fetchWiki('${a.d}')">${a.title || a.d} (${a.reactionCount || 0} reactions)</a>`;
+        ul.appendChild(li);
+      });
+      return column;
     }
 
-    function populateVersionSelectors() {
-      const leftSelect = document.getElementById('left-select');
-      const rightSelect = document.getElementById('right-select');
-      leftSelect.innerHTML = '<option value="">Select Version 1</option>';
-      rightSelect.innerHTML = '<option value="">Select Version 2</option>';
-      events.forEach((ev, idx) => {
-        const time = new Date(ev.created_at * 1000).toLocaleString();
-        const option = `<option value="${idx}">${time} by ${ev.pubkey.slice(0, 8)}...</option>`;
-        leftSelect.innerHTML += option;
-        rightSelect.innerHTML += option;
-      });
+    async function fetchWiki(overrideD = null) {
+      const d = overrideD || document.getElementById('d-tag').value.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      if (overrideD) document.getElementById('d-tag').value = d;
+      document.getElementById('status').textContent = 'Loading...';
+      try {
+        const res = await fetch(`/api/wiki/${d}`);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        events = data.events || [];
+        events = events.sort((a, b) => (b.reactionCount || 0) - (a.reactionCount || 0));
+        document.getElementById('status').textContent = `Found ${events.length} versions (cached: ${data.fromCache})`;
+
+        const leftSelect = document.getElementById('left-select');
+        const rightSelect = document.getElementById('right-select');
+        const singleSelect = document.getElementById('single-select');
+        leftSelect.innerHTML = '<option value="">Select Version 1</option>';
+        rightSelect.innerHTML = '<option value="">Select Version 2</option>';
+        singleSelect.innerHTML = '';
+        events.forEach((ev, idx) => {
+          const time = new Date(ev.created_at * 1000).toLocaleString();
+          const reactions = ev.reactionCount || 0;
+          const option = `<option value="${idx}">${time} by ${ev.pubkey.slice(0, 8)}... (${reactions} reactions)</option>`;
+          leftSelect.innerHTML += option;
+          rightSelect.innerHTML += option;
+          singleSelect.innerHTML += option;
+        });
+
+        toggleSingleMode();
+        renderSingleView(0);
+      } catch (e) {
+        document.getElementById('status').textContent = `Error loading wiki: ${e.message}`;
+        console.error('Wiki fetch error:', e);
+      }
     }
 
     function toggleCompareMode() {
       isCompareMode = true;
       document.getElementById('versions-select').style.display = 'block';
+      document.getElementById('single-select').style.display = 'none';
       document.getElementById('single-view').style.display = 'none';
       document.getElementById('comparison').style.display = 'none';
       document.getElementById('back-btn').style.display = 'inline-block';
@@ -227,20 +180,25 @@
     function toggleSingleMode() {
       isCompareMode = false;
       document.getElementById('versions-select').style.display = 'none';
+      document.getElementById('single-select').style.display = 'block';
       document.getElementById('single-view').style.display = 'block';
       document.getElementById('comparison').style.display = 'none';
       document.getElementById('back-btn').style.display = 'none';
       document.getElementById('compare-btn').style.display = 'inline-block';
+      renderSingleView(0);
     }
 
     function renderSingleView(idx) {
       const singlePanel = document.getElementById('single-view');
       const ev = events[idx];
       const time = new Date(ev.created_at * 1000).toLocaleString();
-      const processed = processContent(ev.content);
-      const html = asciidoctor.convert(processed, { doctype: 'book' }) || `<pre>${ev.content}</pre>`;
-      singlePanel.innerHTML = `<h3>Version: ${time} by ${ev.pubkey.slice(0, 8)}...</h3>${html}`;
-      addWikiLinkHandlers(singlePanel);
+      const processedContent = ev.content.replace(/\[\[([^\]]+)\]\]/g, (match, title) => {
+        const normalized = title.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        return `link:javascript:void(0)[${title}, role="wiki-link", data-title="${normalized}"]`;
+      });
+      const html = asciidoctor.convert(processedContent) || `<pre>${ev.content}</pre>`;
+      singlePanel.innerHTML = `<h3>Version: ${time} by ${ev.pubkey.slice(0, 8)}... (${ev.reactionCount || 0} reactions)</h3>${html}`;
+      addWikiLinkListeners(singlePanel);
     }
 
     function showComparison() {
@@ -254,18 +212,36 @@
       const rightEv = events[rightIdx];
       const leftTime = new Date(leftEv.created_at * 1000).toLocaleString();
       const rightTime = new Date(rightEv.created_at * 1000).toLocaleString();
-      const leftProcessed = processContent(leftEv.content);
-      const rightProcessed = processContent(rightEv.content);
-      const leftHtml = asciidoctor.convert(leftProcessed, { doctype: 'book' }) || `<pre>${leftEv.content}</pre>`;
-      const rightHtml = asciidoctor.convert(rightProcessed, { doctype: 'book' }) || `<pre>${rightEv.content}</pre>`;
+      const leftProcessed = leftEv.content.replace(/\[\[([^\]]+)\]\]/g, (match, title) => {
+        const normalized = title.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        return `link:javascript:void(0)[${title}, role="wiki-link", data-title="${normalized}"]`;
+      });
+      const rightProcessed = rightEv.content.replace(/\[\[([^\]]+)\]\]/g, (match, title) => {
+        const normalized = title.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        return `link:javascript:void(0)[${title}, role="wiki-link", data-title="${normalized}"]`;
+      });
+      const leftHtml = asciidoctor.convert(leftProcessed) || `<pre>${leftEv.content}</pre>`;
+      const rightHtml = asciidoctor.convert(rightProcessed) || `<pre>${rightEv.content}</pre>`;
 
-      leftPanel.innerHTML = `<h3>Version: ${leftTime} by ${leftEv.pubkey.slice(0, 8)}...</h3>${leftHtml}`;
-      rightPanel.innerHTML = `<h3>Version: ${rightTime} by ${rightEv.pubkey.slice(0, 8)}...</h3>${rightHtml}`;
-      addWikiLinkHandlers(leftPanel);
-      addWikiLinkHandlers(rightPanel);
+      leftPanel.innerHTML = `<h3>Version: ${leftTime} by ${leftEv.pubkey.slice(0, 8)}... (${leftEv.reactionCount || 0} reactions)</h3>${leftHtml}`;
+      rightPanel.innerHTML = `<h3>Version: ${rightTime} by ${rightEv.pubkey.slice(0, 8)}... (${rightEv.reactionCount || 0} reactions)</h3>${rightHtml}`;
       document.getElementById('comparison').style.display = 'flex';
       document.getElementById('versions-select').style.display = 'none';
+      addWikiLinkListeners(leftPanel);
+      addWikiLinkListeners(rightPanel);
     }
+
+    function addWikiLinkListeners(panel) {
+      panel.querySelectorAll('.wiki-link').forEach(a => {
+        a.addEventListener('click', e => {
+          e.preventDefault();
+          fetchWiki(a.dataset.title);
+        });
+      });
+    }
+
+    // Initial load
+    fetchPopular();
   </script>
 </body>
 </html>
