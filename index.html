@@ -125,16 +125,6 @@
           fetchArticleVersions(link.dataset.d);
         });
       }
-
-      // If total groups == 1 after this load, auto-load versions
-      if (Object.keys(allGroups).length === 1) {
-        const d = Object.keys(allGroups)[0];
-        events = allGroups[d].sort((a, b) => b.created_at - a.created_at);
-        populateVersionSelectors();
-        toggleSingleMode();
-        renderSingleView(0);
-        document.getElementById('status').textContent += ' (Auto-loading single article)';
-      }
     }
 
     async function fetchWiki() {
@@ -156,9 +146,11 @@
         document.getElementById('status').textContent = `Found ${data_d.events.length} versions across ${cachedCount} cached exact articles...`;
         if (cachedCount > 0) {
           displayResults(groups_cached, 'Cached Exact Matches (by ID)', false);
+        } else {
+          document.getElementById('single-view').innerHTML = '<h3>Search Results (Choose an Article)</h3>';
         }
 
-        // Step 2: Async fetch and append title matches
+        // Step 2: Fetch and append title matches
         document.getElementById('status').textContent += ' Loading title matches...';
         let res_title = await fetch(`/api/wiki/ignored?mode=tag&tag=title&q=${encodeURIComponent(query)}`);
         let data_title = await res_title.json();
@@ -168,7 +160,7 @@
           displayResults(groups_title, 'Exact Title Matches');
         }
 
-        // Step 3: Async fetch and append broad search
+        // Step 3: Fetch and append broad search
         document.getElementById('status').textContent += ' Loading other results...';
         let res_search = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
         let data_search = await res_search.json();
@@ -178,10 +170,19 @@
           displayResults(groups_search, 'Other Relevant Articles');
         }
 
-        const totalCount = cachedCount + titleCount + searchCount;
+        const totalCount = Object.keys(allGroups).length;
         const totalEvents = data_d.events.length + data_title.events.length + data_search.events.length;
         document.getElementById('status').textContent = `Found ${totalEvents} versions across ${totalCount} articles (cached: varies)`;
-        if (totalCount === 0) {
+
+        // Only auto-load at the end if exactly 1 total article
+        if (totalCount === 1) {
+          const d = Object.keys(allGroups)[0];
+          events = allGroups[d].sort((a, b) => b.created_at - a.created_at);
+          populateVersionSelectors();
+          toggleSingleMode();
+          renderSingleView(0);
+          document.getElementById('status').textContent += ' (Auto-loading single article)';
+        } else if (totalCount === 0) {
           document.getElementById('single-view').innerHTML = '<p>No results found.</p>';
         }
       } catch (e) {
