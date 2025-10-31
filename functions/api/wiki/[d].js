@@ -9,7 +9,7 @@ export async function onRequestGet({ request, params, env }) {
 
   if (mode === 'search' && q) {
     filter = { kinds: [30818], search: q };
-    limit = 500;
+    limit = 300;
   } else if (mode === 'tag' && tag && q) {
     filter = { kinds: [30818], ['#' + tag]: [q] };
   } else {
