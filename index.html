@@ -59,6 +59,9 @@
     let isCompareMode = false;
     let allGroups = {}; // Track all loaded groups for dedup
 
+    // Predefined popular 'd' tags for homepage (add more as needed)
+    const popularDs = ['bitcoin', 'nostr', 'cryptocurrency', 'litecoin'];
+
     function processContent(content) {
       content = content.replace(/!\[([^\]]*?)\]\((.*?)\)/g, 'image::$2[$1]');
       content = content.replace(/\[\[([^|]+?)\|([^|]+?)\]\]/g, 'link:wiki:$1[$2]');
@@ -85,7 +88,7 @@
         let dTag = ev.tags.find(t => t[0] === 'd');
         if (dTag) {
           let d = dTag[1];
-          if (!groups[d] && !allGroups[d]) { // Dedup against all loaded
+          if (!groups[d] && !allGroups[d]) {
             groups[d] = [];
           }
           if (groups[d]) groups[d].push(ev);
@@ -101,7 +104,7 @@
       let resultsHtml = append ? '' : '<h3>Search Results (Choose an Article)</h3>';
       resultsHtml += `<h4>${sectionTitle}</h4><ul>`;
       for (let d in groups) {
-        allGroups[d] = groups[d]; // Add to global dedup
+        allGroups[d] = groups[d];
         let evs = groups[d].sort((a, b) => b.created_at - a.created_at);
         let latest = evs[0];
         let title = latest.tags.find(t => t[0] === 'title')?.[1] || d.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -116,7 +119,6 @@
         singleView.innerHTML = resultsHtml;
       }
 
-      // Add click handlers
       const resultLinks = singleView.querySelectorAll('a[data-d]');
       for (let link of resultLinks) {
         link.addEventListener('click', (e) => {
@@ -135,10 +137,9 @@
       document.getElementById('single-view').innerHTML = '';
       document.getElementById('versions-select').style.display = 'none';
       document.getElementById('comparison').style.display = 'none';
-      allGroups = {}; // Reset for new search
+      allGroups = {};
 
       try {
-        // Step 1: Fetch and show cached exact #d (fast)
         let res_d = await fetch(`/api/wiki/${normalized}`);
         let data_d = await res_d.json();
         let groups_cached = groupByD(data_d.events);
@@ -150,7 +151,6 @@
           document.getElementById('single-view').innerHTML = '<h3>Search Results (Choose an Article)</h3>';
         }
 
-        // Step 2: Fetch and append title matches
         document.getElementById('status').textContent += ' Loading title matches...';
         let res_title = await fetch(`/api/wiki/ignored?mode=tag&tag=title&q=${encodeURIComponent(query)}`);
         let data_title = await res_title.json();
@@ -160,7 +160,6 @@
           displayResults(groups_title, 'Exact Title Matches');
         }
 
-        // Step 3: Fetch and append broad search
         document.getElementById('status').textContent += ' Loading other results...';
         let res_search = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}&mode=search`);
         let data_search = await res_search.json();
@@ -174,7 +173,6 @@
         const totalEvents = data_d.events.length + data_title.events.length + data_search.events.length;
         document.getElementById('status').textContent = `Found ${totalEvents} versions across ${totalCount} articles (cached: varies)`;
 
-        // Only auto-load at the end if exactly 1 total article
         if (totalCount === 1) {
           const d = Object.keys(allGroups)[0];
           events = allGroups[d].sort((a, b) => b.created_at - a.created_at);
@@ -187,6 +185,45 @@
         }
       } catch (e) {
         document.getElementById('status').textContent = 'Error loading results: ' + e.message;
+      }
+    }
+
+    async function loadPopularArticles() {
+      document.getElementById('status').textContent = 'Loading popular articles...';
+      document.getElementById('single-view').innerHTML = '';
+      allGroups = {};
+
+      try {
+        // Parallel fetch for speed
+        const fetches = popularDs.map(d => fetch(`/api/wiki/${d}`).then(res => res.json()).catch(() => ({ events: [] })));
+        const datas = await Promise.all(fetches);
+        let totalEvents = 0;
+        datas.forEach(data => {
+          let groups = groupByD(data.events);
+          let count = Object.keys(groups).length;
+          if (count > 0) {
+            displayResults(groups, 'Popular Articles', Object.keys(allGroups).length > 0);
+          }
+          totalEvents += data.events.length;
+        });
+
+        const totalCount = Object.keys(allGroups).length;
+        document.getElementById('status').textContent = `Loaded ${totalEvents} versions across ${totalCount} popular articles from cache.`;
+
+        if (totalCount === 0) {
+          document.getElementById('single-view').innerHTML = '<p>No popular articles cached yet.</p>';
+        }
+
+        // Optional: Add more later if needed (e.g., broad search)
+        // document.getElementById('status').textContent += ' Loading more...';
+        // let res_more = await fetch(`/api/wiki/search?q=popular&mode=search`); // Example
+        // let data_more = await res_more.json();
+        // let groups_more = groupByD(data_more.events);
+        // if (Object.keys(groups_more).length > 0) {
+        //   displayResults(groups_more, 'More Articles');
+        // }
+      } catch (e) {
+        document.getElementById('status').textContent = 'Error loading popular articles: ' + e.message;
       }
     }
 
@@ -266,6 +303,9 @@
       document.getElementById('comparison').style.display = 'flex';
       document.getElementById('versions-select').style.display = 'none';
     }
+
+    // Load popular articles on page load
+    window.addEventListener('load', loadPopularArticles);
   </script>
 </body>
 </html>
